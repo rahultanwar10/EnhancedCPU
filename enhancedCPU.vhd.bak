@@ -1,0 +1,122 @@
+library IEEE; use IEEE.STD_LOGIC_1164.ALL; USE IEEE.NUMERIC_STD.ALL;
+
+entity vscpu is
+    generic(
+        vscpu_A_width : integer := 6;
+        vscpu_D_width : integer := 8;
+        memsize : integer := ((2**6)-1);
+        pc_starts_at : std_logic_vector(5 downto 0) :="000001");
+        port(clock,reset,start,mem_write: in std_logic;
+            addr : in std_logic_vector( vscpu_A_width-1 downto 0);
+            data : in std_logic_vector( vscpu_D_width-1 downto 0);
+				dataBus : out std_logic_vector(vscpu_D_width-1 downto 0);
+				dataRegister : out std_logic_vector(vscpu_D_width-1 downto 0);
+				instructionRegister: out std_logic_vector(1 downto 0);
+				addressRegister: out std_logic_vector(vscpu_A_width-1 downto 0);
+				programCounter: out std_logic_vector(vscpu_A_width-1 downto 0);
+				accumulatorContent : out std_logic_vector(vscpu_D_width-1 downto 0);
+				memoryRead: out std_logic; state : out string(1 to 8));
+end entity;
+architecture rch of vscpu is
+
+type t_state is (sthalt,stfetch1,stfetch2,stfetch3,stadd1,stadd2,stand1,stand2,stinc1,stjmp1);
+signal stvar_ff,stvar_ns : t_state := sthalt;
+
+signal ac_ff,ac_ns : std_logic_vector(vscpu_D_width-1 downto 0) := (others =>'0');
+signal pc_ff :		 std_logic_vector(vscpu_a_width-1 downto 0) := pc_starts_at;
+signal pc_ns :		 std_logic_vector(vscpu_a_width-1 downto 0) := (others =>'0');
+signal ar_ff,ar_ns : std_logic_vector(vscpu_a_width-1 downto 0) := (others =>'0');
+signal ir_ff,ir_ns : std_logic_vector(1 downto 0) := (others =>'0');
+signal dr_ff,dr_ns : std_logic_vector(vscpu_d_width-1 downto 0) := (others =>'0');
+signal dbus :			 std_logic_vector(vscpu_d_width-1 downto 0);
+signal mem_read :	 std_logic;
+
+TYPE  DATA_ARRAY  IS ARRAY (0 TO MEMSIZE-1 ) OF std_logic_vector(7 downto 0) ;
+SIGNAL mem : DATA_ARRAY;    
+begin
+    process begin
+        wait until clock='1';
+		  if (reset = '1') then
+		  ac_ff <= (others =>'0');
+		  pc_ff <= pc_starts_at;
+		  ar_ff <= (others =>'0');
+		  ir_ff <= (others =>'0');
+		  dr_ff <= (others =>'0');
+		  else
+        stvar_ff <= stvar_ns;
+        pc_ff<=pc_ns;
+        ac_ff<=ac_ns;
+        ar_ff<=ar_ns;
+        ir_ff<=ir_ns;
+        dr_ff<=dr_ns;
+		  accumulatorContent <= ac_ff;
+		  dataBus <= dbus;
+		  dataRegister <= dr_ff;
+		  instructionRegister <= ir_ff;
+		  addressRegister <= ar_ff;
+	     programCounter <= pc_ff;
+		  memoryRead <= mem_read;
+		  end if;
+    end process;
+    
+	process(stvar_ff,start) begin
+		stvar_ns <= stvar_ff;
+		case ( stvar_ff ) is
+			when sthalt => if(start='1')then stvar_ns <= stfetch1; end if; state <= "stathalt";
+			when stfetch1 => stvar_ns <= stfetch2 ; state <= "stfetch1";
+			when stfetch2 => stvar_ns <= stfetch3; state <= "stfetch2";
+			when stfetch3 => 
+			case (ir_ff) is
+				when "00" => stvar_ns <= stadd1; state <= "stfetch3";
+				when "01" => stvar_ns <= stand1; state <= "stfetch3";
+				when "11" => stvar_ns <= stinc1; state <= "stfetch3";
+				when "10" => stvar_ns <= stjmp1; state <= "stfetch3";
+				when others => null;
+			end case;
+			when stadd1 => stvar_ns <= stadd2 ; state <= "statadd1";
+			when stadd2 => stvar_ns <= stfetch1 ; state <= "statadd2";
+			when stand1 => stvar_ns <= stand2; state <= "statand1";
+			when stand2 => stvar_ns <= stfetch1; state <= "statand2";
+			when stinc1 => stvar_ns <= stfetch1 ; state <= "statinc1";
+			when stjmp1 => stvar_ns <= stfetch1; state <= "statjmp1";
+		end case;          
+	end process;
+ 
+	 mem_read <='1' when stvar_ff=stfetch2 or stvar_ff=stadd1 or stvar_ff=stand1 else '0';
+	 
+    process(stvar_ff,pc_ff,ac_ff,dr_ff,ir_ff,ar_ff,dbus)
+    begin
+        pc_ns <= pc_ff;
+        ac_ns <= ac_ff;
+        ar_ns <= ar_ff;
+        ir_ns <= ir_ff;
+        dr_ns <= dr_ff;
+        case ( stvar_ff ) is
+        when sthalt => null;
+        when stfetch1 => ar_ns <= pc_ff(5 downto 0) ;
+        when stfetch2 => pc_ns <= std_logic_vector(unsigned(pc_ff)+1);
+                         dr_ns <= dbus;
+                         ar_ns <= dbus(vscpu_d_width-3 downto 0);
+                         ir_ns <= dbus(vscpu_d_width-1 downto vscpu_d_width-2);
+        when stfetch3 => null;
+        when stadd1 => dr_ns <= dbus ;
+        when stadd2 => ac_ns <= std_logic_vector(unsigned(ac_ff)+unsigned(dr_ff)) ;
+        when stand1 => dr_ns <= dbus ;
+        when stand2 => ac_ns <= ac_ff and dr_ff;
+        when stinc1 => ac_ns <= std_logic_vector(unsigned(ac_ff)+ 1) ;
+        when stjmp1 => pc_ns <= dr_ff(vscpu_d_width-3 downto 0);
+        end case;          
+    end process;
+
+	process begin
+		wait until clock='1';
+		if(mem_write ='1') then mem(to_integer(unsigned(addr))) <= data; end if;
+	end process;
+	
+	process begin
+		wait until clock='1';
+		if(stvar_ff = stfetch1) then
+		report "Accumulator Contents = " & integer'image(to_integer(unsigned(ac_ff))); end if;
+	end process;
+dbus <= mem(to_integer(unsigned(ar_ff)))when mem_read ='1' else (others =>'0');
+end rch;
